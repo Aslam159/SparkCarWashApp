@@ -138,14 +138,11 @@ const ManagerDashboard = () => {
   };
   
   const handleToggleBlockSlot = async (slot: string) => {
-    // --- THIS IS THE FIX ---
-    // Check if the slot has an existing booking before trying to block it.
     const isSlotBooked = scheduleItems.some(item => item.type === 'booking' && item.startTimeSAST === slot);
     if (isSlotBooked && !blockedSlots.has(slot)) {
         Alert.alert("Action Denied", "This slot has an existing booking and cannot be blocked.");
         return;
     }
-
     try {
         const idToken = await getAuthToken();
         const formattedDate = format(selectedDate, 'yyyy-MM-dd');
@@ -157,7 +154,6 @@ const ManagerDashboard = () => {
             },
             body: JSON.stringify({ date: formattedDate, slot }),
         });
-        // Refetch data to update the UI immediately
         fetchDailyData(selectedDate);
     } catch (error: any) {
         Alert.alert("Error", "Could not update the slot.");
@@ -188,7 +184,6 @@ const ManagerDashboard = () => {
 
   const handleSetBays = async (count: number) => {
     if (count === 1) {
-        // Check for conflicts before reducing bays
         const slotCounts = scheduleItems.reduce((acc, item) => {
             if (item.type === 'booking') {
                 acc[item.startTimeSAST] = (acc[item.startTimeSAST] || 0) + 1;
@@ -210,7 +205,6 @@ const ManagerDashboard = () => {
             return;
         }
     }
-    // If no conflict or setting to 2 bays, update immediately
     updateBayCount(count);
   };
 
@@ -248,7 +242,10 @@ const ManagerDashboard = () => {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView 
+        style={styles.container} 
+        contentContainerStyle={{ paddingBottom: 50 }}
+    >
       <Text style={styles.title}>Manager Dashboard</Text>
       
       {/* Monthly Summary Section */}
@@ -327,6 +324,7 @@ const styles = StyleSheet.create({
   bookingStatus: { fontSize: 12, fontWeight: 'bold', color: '#fff', backgroundColor: '#28a745', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, overflow: 'hidden' },
   blockedCard: { backgroundColor: '#f8d7da', borderColor: '#f5c6cb', borderWidth: 1 },
   blockedText: { fontSize: 16, fontWeight: 'bold', color: '#721c24' },
+  loader: { marginTop: 20 },
 });
 
 export default ManagerDashboard;

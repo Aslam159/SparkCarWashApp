@@ -23,3 +23,6 @@ ios/Pods/
 # Misc
 .DS_Store
 *.pem
+
+# Firebase
+android/app/google-services.json
