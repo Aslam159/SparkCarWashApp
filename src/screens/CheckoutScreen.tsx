@@ -1,163 +1,169 @@
-// src/screens/CheckoutScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useContext } from 'react';
 import { View, Text, StyleSheet, Button, Alert, Modal, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { format } from 'date-fns';
+import axios from 'axios';
 import auth from '@react-native-firebase/auth';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import { RootStackParamList } from '../../App'; // Assuming App.tsx exports this
 
-const CheckoutScreen = ({ route, navigation }) => {
+// 1. Import the LocationContext
+import { LocationContext } from '../context/LocationContext';
+
+type CheckoutScreenRouteProp = RouteProp<RootStackParamList, 'Checkout'>;
+type CheckoutScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Checkout'>;
+
+const API_URL = 'https://spark-car-wash-api.onrender.com';
+
+const CheckoutScreen = () => {
+  const navigation = useNavigation<CheckoutScreenNavigationProp>();
+  const route = useRoute<CheckoutScreenRouteProp>();
   const { service, slot, date } = route.params;
+
   const [isLoading, setIsLoading] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
-  const [transactionRef, setTransactionRef] = useState<string | null>(null);
+  const [paymentReference, setPaymentReference] = useState<string | null>(null);
+  const [pollingIntervalId, setPollingIntervalId] = useState<NodeJS.Timeout | null>(null);
+
+  // 2. Get the selected location from the global context
+  const { selectedLocation } = useContext(LocationContext);
+  const currentUser = auth().currentUser;
 
   const handlePayNow = async () => {
-    const currentUser = auth().currentUser;
-    if (!currentUser) {
-      Alert.alert("Error", "You must be logged in to make a payment.");
-      return;
+    if (!currentUser || !selectedLocation) {
+        Alert.alert("Error", "User or location not found. Please log in again.");
+        return;
     }
-
     setIsLoading(true);
     try {
-      const checkoutResponse = await fetch('https://spark-car-wash-api.onrender.com/api/payments/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: service.price,
-          email: currentUser.email,
-        }),
-      });
-
-      if (!checkoutResponse.ok) {
-        throw new Error('Failed to initialize payment.');
-      }
-
-      const { authorization_url, reference } = await checkoutResponse.json();
-      setTransactionRef(reference); // Save the transaction reference
-      setPaymentUrl(authorization_url);
-
-    } catch (error: any) {
-      Alert.alert("Payment Error", error.message || "Could not start the payment process.");
-      setIsLoading(false);
+        const response = await axios.post(`${API_URL}/api/payments/checkout`, {
+            amount: service.price,
+            email: currentUser.email,
+        });
+        setPaymentUrl(response.data.authorization_url);
+        setPaymentReference(response.data.reference);
+    } catch (error) {
+        Alert.alert("Payment Error", "Failed to initialize payment.");
+        setIsLoading(false);
     }
   };
 
-  const onPaymentSuccess = async () => {
-    setPaymentUrl(null);
-    setIsLoading(true);
+  const handleSuccessfulPayment = async () => {
+    if (pollingIntervalId) clearInterval(pollingIntervalId);
+    if (!currentUser || !selectedLocation) return;
+    
     try {
-      const formattedDate = format(new Date(date), 'yyyy-MM-dd');
-      const startTimeISO = `${formattedDate}T${slot}:00`;
-
-      const bookingData = {
-        userId: auth().currentUser!.uid,
-        serviceId: service.id,
-        startTime: startTimeISO,
-      };
-
-      const bookingResponse = await fetch('https://spark-car-wash-api.onrender.com/api/bookings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bookingData),
-      });
-
-      if (!bookingResponse.ok) {
-        throw new Error('Your payment was successful, but we failed to save your booking. Please contact support.');
-      }
-
-      const result = await bookingResponse.json();
-      
-      navigation.navigate('BookingConfirmation', {
-        bookingId: result.bookingId,
-        serviceName: service.name,
-        date: date,
-        slot: slot,
-      });
+        // 3. Include locationId when creating the booking
+        const bookingPayload = {
+            userId: currentUser.uid,
+            serviceId: service.id,
+            startTime: `${date}T${slot}:00`,
+            locationId: selectedLocation.id,
+        };
+        const response = await axios.post(`${API_URL}/api/bookings`, bookingPayload);
+        
+        setPaymentUrl(null); // Close WebView
+        setIsLoading(false);
+        
+        navigation.navigate('BookingConfirmation', {
+            service,
+            slot,
+            date,
+            bookingId: response.data.bookingId,
+        });
 
     } catch (error: any) {
-      Alert.alert("Booking Error", error.message);
-    } finally {
-      setIsLoading(false);
+        setIsLoading(false);
+        setPaymentUrl(null);
+        Alert.alert(
+            "Booking Error",
+            error.response?.data?.error || "Your payment was successful, but we failed to save your booking. Please contact support."
+        );
+    }
+  };
+
+  const verifyPaymentStatus = async (reference: string) => {
+    try {
+        const response = await axios.get(`${API_URL}/api/payments/verify/${reference}`);
+        if (response.data.status === 'success') {
+            handleSuccessfulPayment();
+        }
+    } catch (error) {
+        console.error("Payment verification failed:", error);
     }
   };
   
-  // This effect runs when the paymentUrl is set, starting the verification polling
+  // Start polling when the payment reference is set
   useEffect(() => {
-    if (transactionRef) {
-      const interval = setInterval(async () => {
-        try {
-          const verifyResponse = await fetch(`https://spark-car-wash-api.onrender.com/api/payments/verify/${transactionRef}`);
-          const { status } = await verifyResponse.json();
+    if (paymentReference) {
+        const intervalId = setInterval(() => {
+            verifyPaymentStatus(paymentReference);
+        }, 3000); // Check every 3 seconds
+        setPollingIntervalId(intervalId);
 
-          if (status === 'success') {
-            clearInterval(interval); // Stop polling
-            onPaymentSuccess();
-          }
-        } catch (error) {
-          console.error("Polling error:", error);
-        }
-      }, 3000); // Check every 3 seconds
-
-      return () => clearInterval(interval); // Cleanup on component unmount or if transactionRef changes
+        return () => { // Cleanup on component unmount
+            if (intervalId) clearInterval(intervalId);
+        };
     }
-  }, [transactionRef]);
+  }, [paymentReference]);
 
 
   if (paymentUrl) {
     return (
-      <Modal visible={true} onRequestClose={() => setPaymentUrl(null)}>
-        <WebView
-          source={{ uri: paymentUrl }}
-          onLoadStart={() => setIsLoading(true)}
-          onLoadEnd={() => setIsLoading(false)}
-        />
-        {isLoading && <ActivityIndicator size="large" style={StyleSheet.absoluteFill} />}
-      </Modal>
+        <Modal visible={true} animationType="slide">
+            <WebView source={{ uri: paymentUrl }} style={{ flex: 1 }} />
+            <Button title="Cancel Payment" onPress={() => {
+                if (pollingIntervalId) clearInterval(pollingIntervalId);
+                setPaymentUrl(null);
+                setIsLoading(false);
+            }} />
+        </Modal>
     );
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Confirm Your Booking</Text>
+      <Text style={styles.title}>Booking Summary</Text>
       <View style={styles.card}>
-        <View style={styles.detailRow}>
-          <Text style={styles.label}>Service:</Text>
-          <Text style={styles.value}>{service.name}</Text>
-        </View>
-        <View style={styles.detailRow}>
-          <Text style={styles.label}>Date:</Text>
-          <Text style={styles.value}>{format(new Date(date), 'dd MMMM yyyy')}</Text>
-        </View>
-        <View style={styles.detailRow}>
-          <Text style={styles.label}>Time:</Text>
-          <Text style={styles.value}>{slot}</Text>
-        </View>
-        <View style={styles.separator} />
-        <View style={styles.detailRow}>
-          <Text style={styles.totalLabel}>Total Price:</Text>
-          <Text style={styles.totalValue}>R{service.price}</Text>
-        </View>
+        <Text style={styles.cardTitle}>Location</Text>
+        <Text style={styles.cardText}>{selectedLocation?.name}</Text>
       </View>
-      <Button
-        title={isLoading ? 'Connecting...' : 'Pay Now'}
-        onPress={handlePayNow}
-        disabled={isLoading}
-      />
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Service</Text>
+        <Text style={styles.cardText}>{service.name}</Text>
+      </View>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Date & Time</Text>
+        <Text style={styles.cardText}>{format(new Date(date), 'dd MMMM yyyy')} at {slot}</Text>
+      </View>
+      <View style={styles.totalContainer}>
+        <Text style={styles.totalText}>Total</Text>
+        <Text style={styles.totalPrice}>R{service.price}</Text>
+      </View>
+      
+      {isLoading ? (
+        <ActivityIndicator size="large" style={{ marginTop: 20 }}/>
+      ) : (
+        <TouchableOpacity style={styles.button} onPress={handlePayNow}>
+            <Text style={styles.buttonText}>Pay Now</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 20, backgroundColor: '#f5f5f5' },
-  title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 },
-  card: { backgroundColor: '#fff', borderRadius: 8, padding: 20, marginBottom: 20, elevation: 3 },
-  detailRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  label: { fontSize: 16, color: '#6c757d' },
-  value: { fontSize: 16, fontWeight: '500', maxWidth: '60%', textAlign: 'right' },
-  separator: { height: 1, backgroundColor: '#dee2e6', marginVertical: 15 },
-  totalLabel: { fontSize: 18, fontWeight: 'bold' },
-  totalValue: { fontSize: 18, fontWeight: 'bold', color: '#28a745' },
+  title: { fontSize: 28, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 },
+  card: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginBottom: 10 },
+  cardTitle: { fontSize: 14, color: '#888' },
+  cardText: { fontSize: 18, fontWeight: '500', marginTop: 5 },
+  totalContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 20, paddingTop: 20, borderTopWidth: 1, borderTopColor: '#eee' },
+  totalText: { fontSize: 20, fontWeight: 'bold' },
+  totalPrice: { fontSize: 20, fontWeight: 'bold', color: '#007bff' },
+  button: { backgroundColor: '#28a745', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 30 },
+  buttonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
 });
 
 export default CheckoutScreen;

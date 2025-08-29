@@ -1,9 +1,11 @@
-// src/screens/RewardsScreen.tsx
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import React, { useState, useContext } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
+
+// 1. Import the LocationContext
+import { LocationContext } from '../context/LocationContext';
 
 // A simple component to render the point icons
 const PointIcon = ({ filled }: { filled: boolean }) => (
@@ -11,69 +13,72 @@ const PointIcon = ({ filled }: { filled: boolean }) => (
 );
 
 const RewardsScreen = () => {
-  const [loyaltyData, setLoyaltyData] = useState<{ loyaltyPoints: number; freeWashes: number } | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [rewardsData, setRewardsData] = useState({ loyaltyPoints: 0, freeWashes: 0 });
 
-  // useFocusEffect will re-fetch the data every time the user visits this screen
+  // 2. Get the selected location from the global context
+  const { selectedLocation } = useContext(LocationContext);
+
+  // useFocusEffect will re-fetch data every time the screen is viewed
   useFocusEffect(
-    useCallback(() => {
-      const fetchUserData = async () => {
+    React.useCallback(() => {
+      const fetchRewards = async () => {
+        // 3. Don't do anything if there's no user or selected location
         const currentUser = auth().currentUser;
-        if (!currentUser) {
-          setIsLoading(false);
+        if (!currentUser || !selectedLocation) {
+          setLoading(false);
           return;
         }
 
         try {
           const userDoc = await firestore().collection('users').doc(currentUser.uid).get();
           if (userDoc.exists) {
-            const data = userDoc.data();
-            setLoyaltyData({
-              loyaltyPoints: data?.loyaltyPoints || 0,
-              freeWashes: data?.freeWashes || 0,
-            });
+            const userData = userDoc.data();
+            // 4. Get rewards for the SPECIFIC selected location
+            const locationRewards = userData?.rewards?.[selectedLocation.id] || { loyaltyPoints: 0, freeWashes: 0 };
+            setRewardsData(locationRewards);
           }
         } catch (error) {
-          Alert.alert("Error", "Could not load your rewards data.");
+          console.error("Failed to fetch rewards:", error);
         } finally {
-          setIsLoading(false);
+          setLoading(false);
         }
       };
 
-      fetchUserData();
-    }, [])
+      fetchRewards();
+    }, [selectedLocation]) // Re-run the effect if the location changes
   );
 
-  if (isLoading) {
-    return <ActivityIndicator size="large" style={styles.centered} />;
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
   }
 
-  const points = loyaltyData?.loyaltyPoints || 0;
-  const freeWashes = loyaltyData?.freeWashes || 0;
-
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container}>
+      <Text style={styles.title}>My Rewards</Text>
+      <Text style={styles.locationTitle}>Showing rewards for: {selectedLocation?.name}</Text>
+
       <View style={styles.card}>
-        <Text style={styles.title}>Your Loyalty Points</Text>
+        <Text style={styles.cardTitle}>Loyalty Points</Text>
+        <Text style={styles.cardSubtitle}>Earn 10 points for a free wash!</Text>
         <View style={styles.pointsContainer}>
-          {/* Create an array of 10 elements to render the point icons */}
-          {[...Array(10)].map((_, index) => (
-            <PointIcon key={index} filled={index < points} />
+          {/* Create an array of 10 items to map over for the point icons */}
+          {Array.from({ length: 10 }).map((_, index) => (
+            <PointIcon key={index} filled={index < rewardsData.loyaltyPoints} />
           ))}
         </View>
-        <Text style={styles.progressText}>
-          {points} out of 10 points for your next free wash!
-        </Text>
+        <Text style={styles.pointsText}>{rewardsData.loyaltyPoints} / 10 Points</Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.title}>Your Available Rewards</Text>
-        <Text style={styles.freeWashesText}>{freeWashes}</Text>
-        <Text style={styles.progressText}>
-          {freeWashes === 1 ? 'Free Wash Available' : 'Free Washes Available'}
-        </Text>
+        <Text style={styles.cardTitle}>Free Washes Available</Text>
+        <Text style={styles.freeWashesCount}>{rewardsData.freeWashes}</Text>
       </View>
-    </View>
+    </ScrollView>
   );
 };
 
@@ -88,6 +93,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  locationTitle: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
   card: {
     backgroundColor: '#fff',
     borderRadius: 8,
@@ -99,16 +116,20 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  title: {
+  cardTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    textAlign: 'center',
+    marginBottom: 5,
+  },
+  cardSubtitle: {
+    fontSize: 14,
+    color: '#888',
     marginBottom: 20,
   },
   pointsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    marginBottom: 15,
+    marginBottom: 10,
   },
   pointCircle: {
     width: 24,
@@ -123,12 +144,13 @@ const styles = StyleSheet.create({
     borderColor: '#007bff',
     backgroundColor: '#007bff',
   },
-  progressText: {
-    fontSize: 16,
+  pointsText: {
     textAlign: 'center',
-    color: '#6c757d',
+    fontSize: 16,
+    fontWeight: '500',
+    marginTop: 10,
   },
-  freeWashesText: {
+  freeWashesCount: {
     fontSize: 48,
     fontWeight: 'bold',
     textAlign: 'center',

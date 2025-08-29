@@ -1,330 +1,312 @@
-// src/screens/ManagerDashboard.tsx
-import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, Button, StyleSheet, FlatList, ActivityIndicator, Alert, ScrollView, TouchableOpacity } from 'react-native';
-import auth from '@react-native-firebase/auth';
+import React, { useState, useContext, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Alert, FlatList
+} from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { format, addMonths, subMonths, getMonth, getYear, startOfDay, addMinutes } from 'date-fns';
+import auth from '@react-native-firebase/auth';
+import axios from 'axios';
+import { format, addMonths, subMonths, startOfDay } from 'date-fns';
 import DatePicker from 'react-native-date-picker';
 
-// --- Interface Definitions ---
-interface Booking {
-  id: string;
-  startTimeSAST: string;
-  userName: string;
-  serviceName: string;
-  status: string;
-  type: 'booking';
-}
+// Import the LocationContext
+import { LocationContext } from '../context/LocationContext';
 
-interface BlockedSlot {
-    id: string;
-    startTimeSAST: string;
-    type: 'blocked';
-}
+const API_URL = 'https://spark-car-wash-api.onrender.com';
 
-type ScheduleItem = Booking | BlockedSlot;
-
-interface MonthlySummary {
-  serviceName: string;
-  count: number;
-}
+// Define types for our data for better code quality
+type Booking = { id: string; startTimeSAST: string; userName: string; serviceName: string; status: string; };
+type ScheduleItem = { time: string; bookings: Booking[]; isBlocked: boolean; };
+type MonthlySummary = { topServices: { serviceName: string, count: number }[], topClients: { userName: string, count: number }[] };
 
 const ManagerDashboard = () => {
-  // State for monthly summary
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [monthlySummary, setMonthlySummary] = useState<MonthlySummary[]>([]);
-  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
-
-  // State for daily management
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // State for daily data
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [openDatePicker, setOpenDatePicker] = useState(false);
-  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([]);
-  const [isDailyLoading, setIsDailyLoading] = useState(false);
-  const [activeBays, setActiveBays] = useState<number | null>(null);
-  const [blockedSlots, setBlockedSlots] = useState<Set<string>>(new Set());
-  const [allDaySlots, setAllDaySlots] = useState<string[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleItem[]>([]);
+  const [activeBays, setActiveBays] = useState(1);
+  const [blockedSlots, setBlockedSlots] = useState<string[]>([]);
 
-  const getAuthToken = async () => {
-    const currentUser = auth().currentUser;
-    if (!currentUser) throw new Error("Manager not logged in.");
-    return await currentUser.getIdToken();
-  };
+  // State for monthly summary
+  const [summaryDate, setSummaryDate] = useState(new Date());
+  const [summaryData, setSummaryData] = useState<MonthlySummary | null>(null);
 
-  // --- Data Fetching ---
-  const fetchSummaryForMonth = useCallback(async (dateInMonth: Date) => {
-    setIsSummaryLoading(true);
-    setMonthlySummary([]);
+  // State for UI tabs
+  const [activeTab, setActiveTab] = useState('dailySchedule');
+
+  const { selectedLocation } = useContext(LocationContext);
+  const currentUser = auth().currentUser;
+
+  const fetchData = useCallback(async () => {
+    if (!currentUser || !selectedLocation) return;
+    setLoading(true);
+    setError(null);
     try {
-        const idToken = await getAuthToken();
-        const month = getMonth(dateInMonth) + 1;
-        const year = getYear(dateInMonth);
-        const response = await fetch(`https://spark-car-wash-api.onrender.com/api/manager/bookings/summary?month=${month}&year=${year}`, {
-            headers: { 'Authorization': `Bearer ${idToken}` }
-        });
-        if (!response.ok) throw new Error('Failed to fetch monthly summary.');
-        const data = await response.json();
-        setMonthlySummary(data);
-    } catch (error: any) {
-        Alert.alert("Error", error.message);
-    } finally {
-        setIsSummaryLoading(false);
-    }
-  }, []);
+      const token = await currentUser.getIdToken();
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+      const month = format(summaryDate, 'M');
+      const year = format(summaryDate, 'yyyy');
 
-  const fetchDailyData = useCallback(async (date: Date) => {
-    setIsDailyLoading(true);
-    setScheduleItems([]);
-    setBlockedSlots(new Set());
-    try {
-      const idToken = await getAuthToken();
-      const formattedDate = format(date, 'yyyy-MM-dd');
-      
-      const [bookingsRes, blockedSlotsRes, settingsRes] = await Promise.all([
-        fetch(`https://spark-car-wash-api.onrender.com/api/manager/bookings?date=${formattedDate}`, { headers: { 'Authorization': `Bearer ${idToken}` } }),
-        fetch(`https://spark-car-wash-api.onrender.com/api/manager/blocked-slots?date=${formattedDate}`, { headers: { 'Authorization': `Bearer ${idToken}` } }),
-        fetch(`https://spark-car-wash-api.onrender.com/api/manager/settings?date=${formattedDate}`, { headers: { 'Authorization': `Bearer ${idToken}` } })
+      // Fetch all data in parallel
+      const [
+        dailyBookingsRes,
+        settingsRes,
+        blockedSlotsRes,
+        summaryRes
+      ] = await Promise.all([
+        axios.get(`${API_URL}/api/manager/bookings?date=${formattedDate}`, config),
+        axios.get(`${API_URL}/api/manager/settings?date=${formattedDate}`, config),
+        axios.get(`${API_URL}/api/manager/blocked-slots?date=${formattedDate}`, config),
+        axios.get(`${API_URL}/api/manager/bookings/summary?month=${month}&year=${year}`, config)
       ]);
 
-      if (!bookingsRes.ok || !blockedSlotsRes.ok || !settingsRes.ok) {
-        throw new Error('Failed to fetch daily schedule.');
-      }
+      // Process daily schedule
+      const dailyBookings = dailyBookingsRes.data;
+      const allPossibleSlots = generateAllSlots();
+      const newSchedule = allPossibleSlots.map(slot => ({
+        time: slot,
+        bookings: dailyBookings.filter((b: Booking) => b.startTimeSAST === slot),
+        isBlocked: blockedSlotsRes.data.includes(slot),
+      }));
 
-      const bookingsData: Booking[] = await bookingsRes.json();
-      const blockedSlotsData: string[] = await blockedSlotsRes.json();
-      const settingsData = await settingsRes.json();
+      setSchedule(newSchedule);
+      setActiveBays(settingsRes.data.activeBays);
+      setBlockedSlots(blockedSlotsRes.data);
+      setSummaryData(summaryRes.data);
 
-      const combinedItems: ScheduleItem[] = [
-        ...bookingsData.map(b => ({ ...b, type: 'booking' as const })),
-        ...blockedSlotsData.map(s => ({ id: s, startTimeSAST: s, type: 'blocked' as const }))
-      ];
-      combinedItems.sort((a, b) => a.startTimeSAST.localeCompare(b.startTimeSAST));
-      
-      setScheduleItems(combinedItems);
-      setBlockedSlots(new Set(blockedSlotsData));
-      setActiveBays(settingsData.activeBays);
-
-    } catch (error: any) {
-      Alert.alert("Error", error.message);
+    } catch (e: any) {
+      setError(e.response?.data?.error || 'Failed to load manager data.');
     } finally {
-      setIsDailyLoading(false);
+      setLoading(false);
     }
-  }, []);
+  }, [selectedDate, summaryDate, selectedLocation, currentUser]);
 
-  // Generate all possible time slots for the day (runs once)
-  useEffect(() => {
+  useFocusEffect(fetchData);
+
+  const generateAllSlots = () => {
     const slots = [];
-    let time = startOfDay(new Date());
-    time.setHours(8, 0, 0, 0);
-    const closingTime = startOfDay(new Date());
+    let currentTime = new Date();
+    currentTime.setHours(8, 0, 0, 0);
+    const closingTime = new Date();
     closingTime.setHours(16, 0, 0, 0);
-    while (time < closingTime) {
-        slots.push(format(time, 'HH:mm'));
-        time = addMinutes(time, 15);
+    while (currentTime < closingTime) {
+      slots.push(format(currentTime, 'HH:mm'));
+      currentTime.setMinutes(currentTime.getMinutes() + 15);
     }
-    setAllDaySlots(slots);
-  }, []);
-
-  // Refetch data when the screen comes into focus or dates change
-  useFocusEffect(
-    useCallback(() => {
-      fetchSummaryForMonth(currentMonth);
-      fetchDailyData(selectedDate);
-    }, [currentMonth, selectedDate, fetchSummaryForMonth, fetchDailyData])
-  );
-  
-  // --- Handlers ---
-  const handleMonthChange = (direction: 'next' | 'prev') => {
-    setCurrentMonth(current => direction === 'next' ? addMonths(current, 1) : subMonths(current, 1));
-  };
-  
-  const handleToggleBlockSlot = async (slot: string) => {
-    const isSlotBooked = scheduleItems.some(item => item.type === 'booking' && item.startTimeSAST === slot);
-    if (isSlotBooked && !blockedSlots.has(slot)) {
-        Alert.alert("Action Denied", "This slot has an existing booking and cannot be blocked.");
-        return;
-    }
-    try {
-        const idToken = await getAuthToken();
-        const formattedDate = format(selectedDate, 'yyyy-MM-dd');
-        await fetch('https://spark-car-wash-api.onrender.com/api/manager/blocked-slots', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${idToken}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ date: formattedDate, slot }),
-        });
-        fetchDailyData(selectedDate);
-    } catch (error: any) {
-        Alert.alert("Error", "Could not update the slot.");
-    }
-  };
-
-  const updateBayCount = async (count: number) => {
-    try {
-        const idToken = await getAuthToken();
-        const formattedDate = format(selectedDate, 'yyyy-MM-dd');
-        const response = await fetch('https://spark-car-wash-api.onrender.com/api/manager/settings/activeBays', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${idToken}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ count, date: formattedDate }),
-        });
-        if (!response.ok) {
-            throw new Error("Failed to update settings.");
-        }
-        Alert.alert("Success", `Active bays for ${format(selectedDate, 'dd MMMM')} have been set to ${count}.`);
-        setActiveBays(count);
-    } catch (error: any) {
-        Alert.alert("Error", error.message);
-    }
+    return slots;
   };
 
   const handleSetBays = async (count: number) => {
+    if (!currentUser || !selectedLocation) return;
+    const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+  
     if (count === 1) {
-        const slotCounts = scheduleItems.reduce((acc, item) => {
-            if (item.type === 'booking') {
-                acc[item.startTimeSAST] = (acc[item.startTimeSAST] || 0) + 1;
-            }
-            return acc;
-        }, {} as Record<string, number>);
-
-        const hasConflict = Object.values(slotCounts).some(c => c > 1);
-
-        if (hasConflict) {
+        const conflicts = schedule.filter(item => item.bookings.length > 1);
+        if (conflicts.length > 0) {
             Alert.alert(
-                "Warning: Double Bookings Found",
-                "This day has time slots where both bays are booked. Reducing to one bay may cause operational issues. Are you sure you want to continue?",
+                "Warning: Double Bookings Exist",
+                "This day has time slots with more than one booking. Reducing to one bay may cause operational issues. Are you sure you want to continue?",
                 [
                     { text: "Cancel", style: "cancel" },
-                    { text: "Continue", onPress: () => updateBayCount(1) }
+                    { text: "Continue", onPress: () => proceedWithBayChange(count, formattedDate) }
                 ]
             );
             return;
         }
     }
-    updateBayCount(count);
+    proceedWithBayChange(count, formattedDate);
   };
-
-  const handleLogout = () => {
-    auth().signOut();
-  };
-
-  // --- Render Items ---
-  const renderSummaryItem = ({ item }: { item: MonthlySummary }) => (
-    <View style={styles.summaryRow}>
-        <Text style={styles.serviceName}>{item.serviceName}</Text>
-        <Text style={styles.serviceCount}>{item.count}</Text>
-    </View>
-  );
-
-  const renderScheduleItem = ({ item }: { item: ScheduleItem }) => {
-    if (item.type === 'blocked') {
-        return (
-            <View style={[styles.bookingCard, styles.blockedCard]}>
-                <Text style={styles.bookingTime}>{item.startTimeSAST}</Text>
-                <Text style={styles.blockedText}>SLOT BLOCKED</Text>
-            </View>
-        );
+  
+  const proceedWithBayChange = async (count: number, date: string) => {
+    if (!currentUser) return;
+    try {
+        const token = await currentUser.getIdToken();
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        await axios.post(`${API_URL}/api/manager/settings/activeBays`, { count, date }, config);
+        Alert.alert("Success", `Active bays for ${date} set to ${count}.`);
+        fetchData();
+    } catch (error) {
+        Alert.alert("Error", "Failed to update bay settings.");
     }
-    return (
-        <View style={styles.bookingCard}>
-            <Text style={styles.bookingTime}>{item.startTimeSAST}</Text>
-            <View style={styles.bookingDetails}>
-                <Text style={styles.serviceName}>{item.serviceName}</Text>
-                <Text style={styles.userName}>Client: {item.userName}</Text>
-            </View>
-            <Text style={styles.bookingStatus}>{item.status}</Text>
-        </View>
-    );
   };
+
+  const handleToggleBlockSlot = async (slot: string) => {
+    if (!currentUser || !selectedLocation) return;
+
+    const hasBooking = schedule.some(item => item.time === slot && item.bookings.length > 0);
+    if (hasBooking && !blockedSlots.includes(slot)) {
+        Alert.alert("Cannot Block Slot", "This time slot has a customer booking and cannot be blocked.");
+        return;
+    }
+
+    try {
+        const token = await currentUser.getIdToken();
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+        await axios.post(`${API_URL}/api/manager/blocked-slots`, { date: formattedDate, slot }, config);
+        fetchData(); // Refresh data
+    } catch (error) {
+        Alert.alert("Error", "Failed to update time slot.");
+    }
+  };
+  
+  const handleLogout = () => auth().signOut();
+
+  const renderTabContent = () => {
+    switch (activeTab) {
+        case 'dailySchedule':
+            return <DailyScheduleView schedule={schedule} />;
+        case 'dailyManagement':
+            return <DailyManagementView activeBays={activeBays} onSetBays={handleSetBays} allSlots={generateAllSlots()} blockedSlots={blockedSlots} onToggleBlockSlot={handleToggleBlockSlot} />;
+        case 'monthlyStats':
+            return <MonthlyStatsView summaryData={summaryData} summaryDate={summaryDate} setSummaryDate={setSummaryDate} />;
+        default:
+            return null;
+    }
+  };
+
+  if (loading) {
+    return <View style={styles.centered}><ActivityIndicator size="large" /></View>;
+  }
+  if (error) {
+    return <View style={styles.centered}><Text style={styles.errorText}>{error}</Text><Button title="Retry" onPress={fetchData} /></View>;
+  }
 
   return (
-    <ScrollView 
-        style={styles.container} 
-        contentContainerStyle={{ paddingBottom: 50 }}
-    >
+    <View style={styles.container}>
       <Text style={styles.title}>Manager Dashboard</Text>
+      <Text style={styles.locationTitle}>{selectedLocation?.name}</Text>
       
-      {/* Monthly Summary Section */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Monthly Booking Summary</Text>
-        <View style={styles.monthSelector}>
-            <Button title="< Prev" onPress={() => handleMonthChange('prev')} />
-            <Text style={styles.monthText}>{format(currentMonth, 'MMMM yyyy')}</Text>
-            <Button title="Next >" onPress={() => handleMonthChange('next')} />
-        </View>
-        {isSummaryLoading ? <ActivityIndicator/> : <FlatList data={monthlySummary} renderItem={renderSummaryItem} keyExtractor={(item) => item.serviceName} ListEmptyComponent={<Text style={styles.emptyText}>No bookings for this month.</Text>} scrollEnabled={false}/>}
-      </View>
-
-      {/* Daily Management Section */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Daily Management</Text>
-        <Button title={`Viewing: ${format(selectedDate, 'dd MMMM yyyy')}`} onPress={() => setOpenDatePicker(true)} />
-        <DatePicker modal open={openDatePicker} date={selectedDate} mode="date" onConfirm={(d) => { setOpenDatePicker(false); setSelectedDate(d); }} onCancel={() => setOpenDatePicker(false)} />
+      <View style={styles.tabContainer}>
+          <TouchableOpacity style={[styles.tab, activeTab === 'dailySchedule' && styles.activeTab]} onPress={() => setActiveTab('dailySchedule')}><Text style={styles.tabText}>Schedule</Text></TouchableOpacity>
+          <TouchableOpacity style={[styles.tab, activeTab === 'dailyManagement' && styles.activeTab]} onPress={() => setActiveTab('dailyManagement')}><Text style={styles.tabText}>Manage Day</Text></TouchableOpacity>
+          <TouchableOpacity style={[styles.tab, activeTab === 'monthlyStats' && styles.activeTab]} onPress={() => setActiveTab('monthlyStats')}><Text style={styles.tabText}>Stats</Text></TouchableOpacity>
       </View>
       
-      {/* Bay Management */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Bay Management for {format(selectedDate, 'dd MMMM')}</Text>
-        <Text style={styles.statusText}>Currently Active Bays: {activeBays ?? 'Loading...'}</Text>
-        <View style={styles.buttonContainer}>
-            <Button title="Set to 1 Bay" onPress={() => handleSetBays(1)} disabled={activeBays === 1} />
-            <Button title="Set to 2 Bays" onPress={() => handleSetBays(2)} disabled={activeBays === 2} />
-        </View>
-      </View>
+      {activeTab !== 'monthlyStats' && (
+        <TouchableOpacity onPress={() => setOpenDatePicker(true)} style={styles.datePickerButton}>
+            <Text style={styles.datePickerButtonText}>Viewing Day: {format(selectedDate, 'dd MMMM yyyy')}</Text>
+        </TouchableOpacity>
+      )}
 
-      {/* Slot Blocking */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Block Time Slots for {format(selectedDate, 'dd MMMM')}</Text>
-        <View style={styles.slotsGrid}>
-            {allDaySlots.map(slot => (
-                <TouchableOpacity key={slot} style={[styles.slotButton, blockedSlots.has(slot) && styles.slotButtonBlocked]} onPress={() => handleToggleBlockSlot(slot)}>
-                    <Text style={[styles.slotButtonText, blockedSlots.has(slot) && styles.slotButtonTextBlocked]}>{slot}</Text>
-                </TouchableOpacity>
-            ))}
-        </View>
-      </View>
-
-      {/* Daily Schedule */}
-      <Text style={styles.title}>Schedule for {format(selectedDate, 'dd MMMM')}</Text>
-      {isDailyLoading ? <ActivityIndicator size="large" /> : <FlatList data={scheduleItems} renderItem={renderScheduleItem} keyExtractor={(item) => item.id} ListEmptyComponent={<Text style={styles.emptyText}>No bookings or blocked slots for this day.</Text>} scrollEnabled={false}/>}
-
-      <View style={styles.footer}>
-        <Button title="Logout" onPress={handleLogout} />
-      </View>
-    </ScrollView>
+      <DatePicker modal open={openDatePicker} date={selectedDate} mode="date" onConfirm={(d) => { setOpenDatePicker(false); setSelectedDate(d); }} onCancel={() => setOpenDatePicker(false)} />
+      
+      <ScrollView contentContainerStyle={{ paddingBottom: 50 }}>
+        {renderTabContent()}
+      </ScrollView>
+      
+      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+        <Text style={styles.logoutButtonText}>Logout</Text>
+      </TouchableOpacity>
+    </View>
   );
 };
 
+// --- Sub-components for each tab for better organization ---
+
+const DailyScheduleView = ({ schedule }: { schedule: ScheduleItem[] }) => (
+    <View>
+        <Text style={styles.header}>Daily Schedule</Text>
+        {schedule.length > 0 ? schedule.map(item => {
+            if (item.bookings.length === 0 && !item.isBlocked) return null;
+            return (
+                <View key={item.time} style={[styles.scheduleItem, item.isBlocked && styles.blockedItem]}>
+                    <Text style={styles.scheduleTime}>{item.time}</Text>
+                    {item.isBlocked ? <Text style={styles.blockedText}>SLOT BLOCKED</Text> : null}
+                    {item.bookings.map(booking => (
+                        <View key={booking.id} style={styles.bookingDetails}>
+                            <Text>{booking.userName} - {booking.serviceName} (Bay {booking.bayId})</Text>
+                        </View>
+                    ))}
+                </View>
+            );
+        }) : <Text style={styles.emptyText}>No bookings for this day.</Text>}
+    </View>
+);
+
+const DailyManagementView = ({ activeBays, onSetBays, allSlots, blockedSlots, onToggleBlockSlot }: any) => (
+    <View>
+        <View style={styles.card}>
+            <Text style={styles.cardTitle}>Bay Management</Text>
+            <Text>Active Bays for this day: {activeBays}</Text>
+            <View style={styles.buttonRow}>
+                <Button title="Set to 1 Bay" onPress={() => onSetBays(1)} disabled={activeBays === 1} />
+                <Button title="Set to 2 Bays" onPress={() => onSetBays(2)} disabled={activeBays === 2} />
+            </View>
+        </View>
+        <View style={styles.card}>
+            <Text style={styles.cardTitle}>Block Time Slots</Text>
+            <FlatList
+                data={allSlots}
+                keyExtractor={item => item}
+                numColumns={4}
+                renderItem={({ item }) => (
+                    <TouchableOpacity style={[styles.slotContainer, blockedSlots.includes(item) && styles.blockedSlot]} onPress={() => onToggleBlockSlot(item)}>
+                        <Text style={styles.slotText}>{item}</Text>
+                    </TouchableOpacity>
+                )}
+            />
+        </View>
+    </View>
+);
+
+const MonthlyStatsView = ({ summaryData, summaryDate, setSummaryDate }: any) => (
+    <View>
+        <View style={styles.monthSelector}>
+            <Button title="< Prev" onPress={() => setSummaryDate(subMonths(summaryDate, 1))} />
+            <Text style={styles.monthText}>{format(summaryDate, 'MMMM yyyy')}</Text>
+            <Button title="Next >" onPress={() => setSummaryDate(addMonths(summaryDate, 1))} />
+        </View>
+        <View style={styles.card}>
+            <Text style={styles.cardTitle}>Top 5 Clients</Text>
+            {summaryData?.topClients.length > 0 ? summaryData.topClients.map((client: any, index: number) => (
+                <Text key={index} style={styles.listItem}>{index + 1}. {client.userName} ({client.count} washes)</Text>
+            )) : <Text style={styles.emptyText}>No client data for this month.</Text>}
+        </View>
+        <View style={styles.card}>
+            <Text style={styles.cardTitle}>Most Booked Services</Text>
+            {summaryData?.topServices.length > 0 ? summaryData.topServices.map((service: any, index: number) => (
+                <Text key={index} style={styles.listItem}>{service.serviceName} ({service.count} washes)</Text>
+            )) : <Text style={styles.emptyText}>No service data for this month.</Text>}
+        </View>
+    </View>
+);
+
+
+// --- Styles ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
-  title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', paddingVertical: 15 },
-  card: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginHorizontal: 15, marginBottom: 10, elevation: 2 },
-  cardTitle: { fontSize: 18, fontWeight: 'bold', textAlign: 'center', marginBottom: 15 },
-  monthSelector: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  monthText: { fontSize: 16, fontWeight: '600' },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  serviceName: { fontSize: 16 },
-  serviceCount: { fontSize: 16, fontWeight: 'bold' },
-  emptyText: { textAlign: 'center', padding: 20, fontStyle: 'italic', color: '#6c757d' },
-  footer: { padding: 15, marginTop: 20 },
-  statusText: { fontSize: 16, textAlign: 'center', marginBottom: 15 },
-  buttonContainer: { flexDirection: 'row', justifyContent: 'space-around' },
-  slotsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
-  slotButton: { backgroundColor: '#e9ecef', padding: 8, borderRadius: 5, margin: 4 },
-  slotButtonBlocked: { backgroundColor: '#dc3545' },
-  slotButtonText: { fontSize: 14, color: '#212529' },
-  slotButtonTextBlocked: { color: '#fff' },
-  bookingCard: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginHorizontal: 15, marginBottom: 10, flexDirection: 'row', alignItems: 'center', elevation: 2 },
-  bookingTime: { fontSize: 18, fontWeight: 'bold', color: '#007bff', marginRight: 15 },
-  bookingDetails: { flex: 1 },
-  bookingStatus: { fontSize: 12, fontWeight: 'bold', color: '#fff', backgroundColor: '#28a745', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, overflow: 'hidden' },
-  blockedCard: { backgroundColor: '#f8d7da', borderColor: '#f5c6cb', borderWidth: 1 },
-  blockedText: { fontSize: 16, fontWeight: 'bold', color: '#721c24' },
-  loader: { marginTop: 20 },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', marginVertical: 15 },
+  locationTitle: { fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 15 },
+  tabContainer: { flexDirection: 'row', justifyContent: 'space-around', borderBottomWidth: 1, borderBottomColor: '#ddd' },
+  tab: { paddingVertical: 10, paddingHorizontal: 15 },
+  activeTab: { borderBottomWidth: 3, borderBottomColor: '#007bff' },
+  tabText: { fontSize: 16, fontWeight: '500' },
+  datePickerButton: { backgroundColor: '#fff', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#ccc', alignItems: 'center', margin: 15 },
+  datePickerButtonText: { fontSize: 16, color: '#007bff', fontWeight: 'bold' },
+  header: { fontSize: 20, fontWeight: 'bold', marginTop: 15, marginBottom: 10, paddingHorizontal: 15 },
+  scheduleItem: { backgroundColor: '#fff', padding: 10, marginHorizontal: 15, marginBottom: 5, borderRadius: 5, borderWidth: 1, borderColor: '#eee' },
+  blockedItem: { backgroundColor: '#ffe3e3' },
+  scheduleTime: { fontSize: 16, fontWeight: 'bold' },
+  bookingDetails: { marginLeft: 10, marginTop: 5 },
+  blockedText: { color: 'red', fontWeight: 'bold' },
+  card: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginHorizontal: 15, marginBottom: 15, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
+  cardTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
+  buttonRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 10 },
+  slotContainer: { flex: 1, margin: 4, padding: 10, borderWidth: 1, borderColor: '#ccc', borderRadius: 8, alignItems: 'center', backgroundColor: '#fff' },
+  blockedSlot: { backgroundColor: '#dc3545' },
+  slotText: { fontSize: 14 },
+  monthSelector: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15 },
+  monthText: { fontSize: 18, fontWeight: 'bold' },
+  listItem: { fontSize: 16, paddingVertical: 4 },
+  emptyText: { textAlign: 'center', fontStyle: 'italic', color: '#888', padding: 10 },
+  logoutButton: { position: 'absolute', bottom: 10, left: 15, right: 15, backgroundColor: '#6c757d', padding: 12, borderRadius: 8, alignItems: 'center' },
+  logoutButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  errorText: { color: 'red', textAlign: 'center' },
 });
 
 export default ManagerDashboard;
