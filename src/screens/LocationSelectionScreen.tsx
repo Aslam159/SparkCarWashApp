@@ -1,35 +1,68 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import React, { useState, useCallback, useContext } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, SafeAreaView } from 'react-native';
 import axios from 'axios';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { LocationContext, Location } from '../context/LocationContext';
+import { StackNavigationProp } from '@react-navigation/stack';
+import { RootStackParamList } from '../../App';
+
+type LocationSelectionNavigationProp = StackNavigationProp<RootStackParamList, 'LocationSelection'>;
 
 const API_URL = 'https://spark-car-wash-api.onrender.com';
 
 const LocationSelectionScreen = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
-  const { selectLocation } = useContext(LocationContext);
+  const { setSelectedLocation } = useContext(LocationContext);
+  const navigation = useNavigation<LocationSelectionNavigationProp>();
 
-  useEffect(() => {
-    const fetchLocations = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/api/locations`);
-        setLocations(response.data);
-      } catch (error) {
-        Alert.alert('Error', 'Could not fetch car wash locations.');
-        console.error("Fetch locations error:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  useFocusEffect(
+    useCallback(() => {
+      const controller = new AbortController();
+      let isActive = true;
 
-    fetchLocations();
-  }, []);
+      const fetchLocations = async () => {
+        setLoading(true);
+        try {
+          const response = await axios.get(`${API_URL}/api/locations`, {
+            signal: controller.signal,
+            timeout: 15000,
+          });
+          if (isActive) {
+            // Sort the locations alphabetically by name before displaying them
+            const sortedLocations = response.data.sort((a: Location, b: Location) => a.name.localeCompare(b.name));
+            setLocations(sortedLocations);
+          }
+        } catch (error: any) {
+          if (isActive && error?.name !== 'CanceledError') {
+            Alert.alert("Error", "Could not fetch locations.");
+          }
+        } finally {
+          if (isActive) setLoading(false);
+        }
+      };
+
+      fetchLocations();
+
+      return () => {
+        isActive = false;
+        controller.abort();
+      };
+    }, [])
+  );
 
   const handleSelectLocation = (location: Location) => {
-    selectLocation(location);
-    // The navigation to the main app will be handled by the logic in App.tsx
+    setSelectedLocation(location);
+    // After selecting, navigate back to the Home screen
+    navigation.navigate('Home');
   };
+
+  const renderItem = ({ item }: { item: Location }) => (
+    <TouchableOpacity style={styles.itemContainer} onPress={() => handleSelectLocation(item)}>
+      <Text style={styles.itemTitle}>{item.name}</Text>
+      <Text style={styles.itemAddress}>{item.address}</Text>
+    </TouchableOpacity>
+  );
 
   if (loading) {
     return (
@@ -41,48 +74,46 @@ const LocationSelectionScreen = () => {
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Select a Car Wash</Text>
+    <SafeAreaView style={styles.container}>
       <FlatList
         data={locations}
+        renderItem={renderItem}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.itemContainer} onPress={() => handleSelectLocation(item)}>
-            <Text style={styles.itemName}>{item.name}</Text>
-            <Text style={styles.itemAddress}>{item.address}</Text>
-          </TouchableOpacity>
-        )}
+        ListEmptyComponent={<Text style={styles.emptyText}>No locations available.</Text>}
       />
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
   centered: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  container: {
-    flex: 1,
-    paddingTop: 50,
-    paddingHorizontal: 20,
-  },
   title: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     textAlign: 'center',
-    marginBottom: 20,
+    marginVertical: 20,
   },
   itemContainer: {
     backgroundColor: '#fff',
     padding: 20,
+    marginVertical: 8,
+    marginHorizontal: 16,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  itemName: {
+  itemTitle: {
     fontSize: 18,
     fontWeight: 'bold',
   },
@@ -90,6 +121,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 5,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginTop: 50,
+    fontStyle: 'italic',
   },
 });
 

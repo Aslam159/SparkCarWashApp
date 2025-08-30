@@ -1,14 +1,13 @@
-import React, { useState, useContext } from 'react';
-import { View, Text, StyleSheet, Button, Alert, Modal, ActivityIndicator } from 'react-native';
+import React, { useState, useContext, useEffect } from 'react';
+import { View, Text, StyleSheet, Button, Alert, Modal, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { format } from 'date-fns';
 import axios from 'axios';
 import auth from '@react-native-firebase/auth';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { RootStackParamList } from '../../App'; // Assuming App.tsx exports this
+import { RootStackParamList } from '../../App'; 
 
-// 1. Import the LocationContext
 import { LocationContext } from '../context/LocationContext';
 
 type CheckoutScreenRouteProp = RouteProp<RootStackParamList, 'Checkout'>;
@@ -25,36 +24,59 @@ const CheckoutScreen = () => {
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [paymentReference, setPaymentReference] = useState<string | null>(null);
   const [pollingIntervalId, setPollingIntervalId] = useState<NodeJS.Timeout | null>(null);
+  const [isBooking, setIsBooking] = useState(false);
 
-  // 2. Get the selected location from the global context
   const { selectedLocation } = useContext(LocationContext);
   const currentUser = auth().currentUser;
 
   const handlePayNow = async () => {
     if (!currentUser || !selectedLocation) {
-        Alert.alert("Error", "User or location not found. Please log in again.");
+        Alert.alert("Error", "User or location not found.");
         return;
     }
     setIsLoading(true);
+
+    // Create the robust payload for verification
+    const verificationPayload = {
+      startTime: `${date}T${slot}:00`,
+      locationId: selectedLocation.id,
+    };
+
     try {
-        const response = await axios.post(`${API_URL}/api/payments/checkout`, {
+        // 1. Verify the slot is still available
+        await axios.post(`${API_URL}/api/bookings/verify-slot`, verificationPayload);
+
+        // 2. If verification is successful, proceed to payment
+        const paymentResponse = await axios.post(`${API_URL}/api/payments/checkout`, {
             amount: service.price,
             email: currentUser.email,
         });
-        setPaymentUrl(response.data.authorization_url);
-        setPaymentReference(response.data.reference);
-    } catch (error) {
-        Alert.alert("Payment Error", "Failed to initialize payment.");
+        setPaymentUrl(paymentResponse.data.authorization_url);
+        setPaymentReference(paymentResponse.data.reference);
+
+    } catch (error: any) {
+        if (error.response?.status === 409) {
+            Alert.alert(
+                "Slot Taken",
+                "Sorry, this time slot was just booked by someone else. Please choose another time.",
+                [{ text: "OK", onPress: () => navigation.goBack() }]
+            );
+        } else {
+            Alert.alert("Error", "Could not verify the time slot. Please try again.");
+        }
         setIsLoading(false);
     }
   };
 
   const handleSuccessfulPayment = async () => {
+    if (isBooking) return;
+    setIsBooking(true);
+
     if (pollingIntervalId) clearInterval(pollingIntervalId);
     if (!currentUser || !selectedLocation) return;
     
     try {
-        // 3. Include locationId when creating the booking
+        // 3. Create the final booking payload after payment success
         const bookingPayload = {
             userId: currentUser.uid,
             serviceId: service.id,
@@ -63,23 +85,17 @@ const CheckoutScreen = () => {
         };
         const response = await axios.post(`${API_URL}/api/bookings`, bookingPayload);
         
-        setPaymentUrl(null); // Close WebView
+        setPaymentUrl(null);
         setIsLoading(false);
         
         navigation.navigate('BookingConfirmation', {
-            service,
-            slot,
-            date,
-            bookingId: response.data.bookingId,
+            service, slot, date, bookingId: response.data.bookingId,
         });
 
     } catch (error: any) {
         setIsLoading(false);
         setPaymentUrl(null);
-        Alert.alert(
-            "Booking Error",
-            error.response?.data?.error || "Your payment was successful, but we failed to save your booking. Please contact support."
-        );
+        Alert.alert("Booking Error", "Your payment was successful, but we failed to save your booking.");
     }
   };
 
@@ -94,17 +110,13 @@ const CheckoutScreen = () => {
     }
   };
   
-  // Start polling when the payment reference is set
   useEffect(() => {
     if (paymentReference) {
         const intervalId = setInterval(() => {
             verifyPaymentStatus(paymentReference);
-        }, 3000); // Check every 3 seconds
+        }, 3000);
         setPollingIntervalId(intervalId);
-
-        return () => { // Cleanup on component unmount
-            if (intervalId) clearInterval(intervalId);
-        };
+        return () => { if (intervalId) clearInterval(intervalId); };
     }
   }, [paymentReference]);
 
@@ -167,4 +179,3 @@ const styles = StyleSheet.create({
 });
 
 export default CheckoutScreen;
-

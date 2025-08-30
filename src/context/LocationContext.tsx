@@ -1,4 +1,4 @@
-import React, from 'react';
+import React from 'react';
 
 // Define the shape of a location object
 export interface Location {
@@ -7,28 +7,26 @@ export interface Location {
   address: string;
 }
 
-// Define the shape of our context state
+// Define the shape of the context data
 interface LocationContextType {
   selectedLocation: Location | null;
-  selectLocation: (location: Location | null) => void;
+  setSelectedLocation: (location: Location | null) => void;
 }
 
 // Create the context with a default value
 export const LocationContext = React.createContext<LocationContextType>({
   selectedLocation: null,
-  selectLocation: () => {},
+  setSelectedLocation: () => {},
 });
 
-// Create a provider component that will wrap our app
+// Create a provider component
 export const LocationProvider = ({ children }: { children: React.ReactNode }) => {
   const [selectedLocation, setSelectedLocation] = React.useState<Location | null>(null);
 
-  const selectLocation = (location: Location | null) => {
-    setSelectedLocation(location);
-  };
+  const value = { selectedLocation, setSelectedLocation };
 
   return (
-    <LocationContext.Provider value={{ selectedLocation, selectLocation }}>
+    <LocationContext.Provider value={value}>
       {children}
     </LocationContext.Provider>
   );
